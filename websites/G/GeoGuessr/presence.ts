@@ -59,6 +59,16 @@ const cooldowns: { [key: string]: any } = {}
 let strings: any
 let infoFromFirstPath: { [key: string]: any }
 
+let spookyGuessrDay: any
+let health: any
+let spookyGuessrMode: any
+
+const spookyGuessrMaps: any = {
+  Normal: '66014417ff2366aa9a7504df',
+  Hard: '62a44b22040f04bd36e8a914',
+  Nightmare: '68c7e1f6c44ba050949032c8',
+}
+
 async function updateStrings() {
   strings = await presence.getStrings({
     brCountries: 'geoguessr.brCountries',
@@ -75,6 +85,7 @@ async function updateStrings() {
     inParty: 'geoguessr.inParty',
     inRanked: 'geoguessr.inRanked',
     inUnranked: 'geoguessr.inUnranked',
+    unranked: 'geoguessr.unranked',
     liveChallenge: 'geoguessr.liveChallenge',
     maps: 'geoguessr.maps',
     matchmaking: 'geoguessr.matchmaking',
@@ -96,6 +107,10 @@ async function updateStrings() {
     viewCommunity: 'geoguessr.viewCommunity',
     viewHelppage: 'general.viewHelppage',
     viewMap: 'geoguessr.viewMap',
+    spookyGuessr: 'geoguessr.spookyGuessr',
+    spookyGuessrDay: 'geoguessr.spookyGuessrDay',
+    health: 'geoguessr.health',
+    rating: 'geoguessr.rating',
   })
   infoFromFirstPath = {
     'shop': {
@@ -190,6 +205,10 @@ let pathCache: any = []
 let urlCache: any
 
 let soloDivision: any
+let soloRatingString: any
+
+let isUnranked: boolean = false
+let currentGameMode: string = ''
 
 presence.on('UpdateData', async () => {
   const currentRawURL = document.location.href
@@ -216,7 +235,37 @@ presence.on('UpdateData', async () => {
     return urlCache === currentRawURL
   }
 
-  async function setHealthUI(prefix: string) {
+  function findGameMode() {
+    if (cooldowns.findGameMode) {
+      return
+    }
+    cooldowns.findGameMode = true
+    setTimeout(() => {
+      cooldowns.findGameMode = false
+    }, 2500)
+    // Find it in Pause menu
+    const pauseMenuInfo = document.querySelectorAll('[class^="duels-settings_gameInfoContent__"]')
+    if (pauseMenuInfo[0]) {
+      const pauseMenuText = pauseMenuInfo[0].textContent ?? ''
+      const gameModeName = pauseMenuText.split(': ')[2] ?? currentGameMode
+      currentGameMode = gameModeName
+    }
+    // Find it in matchmaking screen
+    const matchmakingModeTitle = document.querySelectorAll('[class^="game-mode-brand_title__"]')
+    if (matchmakingModeTitle[0]) {
+      currentGameMode = matchmakingModeTitle[0].textContent ?? currentGameMode
+    }
+    // Find it in spectator screen
+    const gameModeTitleSpectator = document.querySelectorAll('[class^="post-guess-player-spectator_sidePanelSubTitle__"]')
+    if (gameModeTitleSpectator[0]) {
+      currentGameMode = gameModeTitleSpectator[0].textContent ?? currentGameMode
+    }
+
+    return currentGameMode
+  }
+
+  async function setHealthUI(prefix: string, autoSetGamemode: boolean) {
+    findGameMode()
     if (cooldowns.health) {
       return
     }
@@ -232,6 +281,9 @@ presence.on('UpdateData', async () => {
       if (firstLabel && secondLabel && firstLabel.textContent && secondLabel.textContent) {
         scoreText = ` | ${firstLabel.textContent} - ${secondLabel.textContent}`
       }
+    }
+    if (autoSetGamemode && currentGameMode !== '') {
+      prefix = `${currentGameMode} ${prefix}`
     }
     if (!isConnected()) {
       return
@@ -278,7 +330,13 @@ presence.on('UpdateData', async () => {
     return await getMapIconFromInfo(mapInfo)
   }
 
-  async function setDivisionInfo(divisionName: any = null) {
+  async function setDivisionInfo(divisionName: any = null, rating: any = null) {
+    if (isUnranked) {
+      presenceData.state = strings.inUnranked
+      presenceData.smallImageKey = divisionIcons.Unranked
+      presenceData.smallImageText = strings.unranked
+      return
+    }
     if (!divisionName) {
       const selfUserId = await getSelfUserId()
       if (!selfUserId) {
@@ -290,6 +348,10 @@ presence.on('UpdateData', async () => {
       }
       divisionName = rankedInfo.divisionName
       soloDivision = divisionName
+      if (rankedInfo.rating) {
+        soloRatingString = strings.rating.replace('{0}', rankedInfo.rating)
+        rating = soloRatingString
+      }
     }
     if (!isConnected()) {
       return
@@ -298,18 +360,28 @@ presence.on('UpdateData', async () => {
     const divisionIcon = divisionIcons[divisionName]
     if (divisionIcon) {
       presenceData.smallImageKey = divisionIcon
+      if (rating) {
+        presenceData.smallImageText = rating
+      }
+      else {
+        presenceData.smallImageText = divisionName
+      }
+    }
+    else {
+      presenceData.smallImageKey = divisionIcons.Unranked
       presenceData.smallImageText = divisionName
     }
   }
 
   if (currentPath[0] === 'game') {
-    // Handle classic games
-    const resultElements = document.querySelectorAll('[class^="result-layout_root__"]')
-    const resultsExist = resultElements.length > 0
-    if (isNewURL || (resultsExist && !alreadyFetchedList.game)) {
-      alreadyFetchedList.game = true
+    if (!cooldowns[currentPath[0]]) {
+      cooldowns[currentPath[0]] = true
+      setTimeout(() => {
+        cooldowns[currentPath[0] as string] = false
+      }, 5000)
+      // Handle classic games
       const gameId = currentPath[1]
-      const gameInfo = await fetchUrl(`https://www.geoguessr.com/api/v3/games/${gameId}`, true, 1)
+      const gameInfo = await fetchUrl(`https://www.geoguessr.com/api/v3/games/${gameId}`, true)
       if (!isConnected()) {
         return
       }
@@ -343,44 +415,51 @@ presence.on('UpdateData', async () => {
         }
       }
       presenceData.smallImageText = gameMode
+
       if (gameInfo.mode === 'streak') {
+        const statsRoundContainer = document.querySelector('[class*="status_section__"][data-qa="round-number"]')
+        const streaksValue = statsRoundContainer && statsRoundContainer.querySelector('[class*="status_streaksValue__"]')
         presenceData.smallImageKey = gameModeIcons.streaks
         presenceData.smallImageText = strings.streaks
-        presenceData.details = `${gameMode} | ${
-          strings.classicStreakCount
-            .replace('{0}', gameInfo.player.totalStreak || 0)
+        presenceData.details = `${gameMode} | ${strings.classicStreakCount
+          .replace('{0}', (streaksValue && streaksValue.textContent) || gameInfo.player.totalStreak || 0)
         }`
         presenceData.state = mapName
-      }
-      else if (gameInfo.type === 'challenge') {
-        presenceData.details = `${gameMode} ${strings.challenge} | ${strings.classicScore
-          .replace('{0}', gameInfo.player.totalScore.amount)
-          .replace('{1}', gameInfo.round)
-          .replace('{2}', gameInfo.roundCount)
-        }`
-        presenceData.state = mapName
-        presenceData.smallImageKey = gameModeIcons.challenges
-        presenceData.smallImageText = strings.challenge
       }
       else {
-        presenceData.details = `${gameMode} | ${
-          strings.classicScore
-            .replace('{0}', gameInfo.player.totalScore.amount)
-            .replace('{1}', gameInfo.round)
-            .replace('{2}', gameInfo.roundCount)
-        }`
-        presenceData.state = mapName
+        const statsScoreContainer = document.querySelector('[class*="status_section__"][data-qa="score"]')
+        const statsScoreValue = statsScoreContainer && statsScoreContainer.querySelector('[class*="status_value__"]')
+
+        const statsRoundContainer = document.querySelector('[class*="status_section__"][data-qa="round-number"]')
+        const statsRoundValue = statsRoundContainer && statsRoundContainer.querySelector('[class*="status_value__"]')
+        const statsRoundValues = statsRoundValue && statsRoundValue.textContent && statsRoundValue.textContent.split(' / ').map(Number)
+        if (gameInfo.type === 'challenge') {
+          presenceData.state = mapName
+          presenceData.smallImageKey = gameModeIcons.challenges
+          presenceData.smallImageText = strings.challenge
+          presenceData.details = `${gameMode} ${strings.challenge} | ${strings.classicScore
+            .replace('{0}', (statsScoreValue && statsScoreValue.textContent) || gameInfo.player.totalScore.amount)
+            .replace('{1}', (statsRoundValues && statsRoundValues[0]) || gameInfo.round)
+            .replace('{2}', (statsRoundValues && statsRoundValues[1]) || gameInfo.roundCount)
+          }`
+        }
+        else {
+          presenceData.details = `${gameMode} | ${strings.classicScore
+            .replace('{0}', (statsScoreValue && statsScoreValue.textContent) || gameInfo.player.totalScore.amount)
+            .replace('{1}', (statsRoundValues && statsRoundValues[0]) || gameInfo.round)
+            .replace('{2}', (statsRoundValues && statsRoundValues[1]) || gameInfo.roundCount)
+          }`
+          presenceData.state = mapName
+        }
       }
     }
-    else if (alreadyFetchedList.game && !resultsExist) {
-      alreadyFetchedList.game = false
-    }
   }
+
   else if (currentPath[0] === 'challenge') {
     if (!alreadyFetchedList.challenge) {
       alreadyFetchedList.challenge = true
       const gameId = currentPath[1]
-      const gameInfo = await fetchUrl(`https://www.geoguessr.com/api/v3/challenges/${gameId}`, true, 60)
+      const gameInfo = await fetchUrl(`https://www.geoguessr.com/api/v3/challenges/${gameId}`, true)
       if (!isConnected()) {
         return
       }
@@ -428,33 +507,26 @@ presence.on('UpdateData', async () => {
       if (!isConnected()) {
         return
       }
-      let gameMode = strings.movementMoving
       const isRanked = gameInfo.options.competitiveGameMode !== 'None'
       const isTeams = gameInfo.teams[0].players.length > 1 || gameInfo.teams[1].players.length > 1
       const gameType = (isTeams && strings.teamDuels) || strings.duels
+
+      let gameMode = strings.movementMoving
       if (gameInfo.movementOptions.forbidMoving) {
         gameMode = strings.movementNoMove
         if (gameInfo.movementOptions.forbidRotating && gameInfo.movementOptions.forbidZooming) {
           gameMode = strings.movementNmpz
         }
       }
-      const healthOldUI = document.querySelectorAll('[class^="health-bar_livesLabel__"]')
-      let scoreText: any
-      if (healthOldUI.length >= 2) {
-        const firstLabel = healthOldUI[0] as HTMLElement
-        const secondLabel = healthOldUI[1] as HTMLElement
-        if (firstLabel && secondLabel && firstLabel.textContent && secondLabel.textContent) {
-          scoreText = ` | ${firstLabel.textContent} - ${secondLabel.textContent}`
-        }
-      }
-      presenceData.details = `${gameMode} ${gameType}${(scoreText && scoreText) || ''}`
+      setHealthUI(`${gameMode} ${gameType}`, false)
       delete presenceData.buttons
+
       if (isRanked) {
         presenceData.largeImageKey = (isTeams && gameModeIcons.team_duels) || gameModeIcons.solo_duels
         presenceData.state = strings.inRanked
         delete presenceData.smallImageKey
         if (!isTeams) {
-          setDivisionInfo(soloDivision)
+          setDivisionInfo(soloDivision, soloRatingString)
         }
       }
       else if (gameInfo.options.gameContext.type === 'PartyV2') {
@@ -466,7 +538,8 @@ presence.on('UpdateData', async () => {
       else {
         presenceData.largeImageKey = (isTeams && gameModeIcons.team_duels) || gameModeIcons.solo_duels
         presenceData.state = strings.inUnranked
-        delete presenceData.smallImageKey
+        presenceData.smallImageKey = divisionIcons.Unranked
+        presenceData.smallImageText = strings.unranked
       }
     }
   }
@@ -482,29 +555,107 @@ presence.on('UpdateData', async () => {
       presenceData.state = strings.inRanked
       delete presenceData.smallImageKey
       if (!isTeams) {
-        setDivisionInfo(soloDivision)
+        setDivisionInfo(soloDivision, soloRatingString)
       }
+    }
+  }
+  else if (currentPath[0] === 'halloween') {
+    const spookyGuessrModeElement = document.querySelectorAll('[class*="difficulty-selector_isSelected__"]')
+    if (spookyGuessrModeElement[0]) {
+      spookyGuessrMode = spookyGuessrModeElement[0].textContent
+    }
+    presenceData.largeImageKey = gameModeIcons.halloween
+    if (spookyGuessrMode && currentPath[1] === 'game') {
+      presenceData.details = `${strings.spookyGuessr} (${spookyGuessrMode})`
+    }
+    else {
+      presenceData.details = strings.spookyGuessr
+    }
+
+    if (currentPath[1] === 'game') {
+      const isDay1 = document.querySelectorAll('[class^="halloween-game-starting_dayOne__"]')
+      const healthElement = document.querySelectorAll('[id^="halloween-health-bar-label"]')
+      const roundNumberElement = document.querySelectorAll('[class^="next-day-countdown_currentRoundNumber__"]')
+      if (healthElement[0]) {
+        health = healthElement[0].textContent
+      }
+      if (roundNumberElement[0]) {
+        spookyGuessrDay = roundNumberElement[0].textContent
+      }
+      else if (isDay1) {
+        spookyGuessrDay = '1'
+      }
+
+      if (!cooldowns[currentPath[0]]) {
+        cooldowns[currentPath[0]] = true
+        setTimeout(() => {
+          cooldowns[currentPath[0] as string] = false
+        }, 5000)
+        if (health) {
+          if (spookyGuessrDay) {
+            presenceData.state = `${strings.spookyGuessrDay.replace('{0}', spookyGuessrDay)} | ${strings.health.replace('{0}', health)}`
+          }
+          else {
+            presenceData.state = strings.health.replace('{0}', health)
+          }
+        }
+        else {
+          delete presenceData.state
+        }
+
+        const spookyGuessrMapId = spookyGuessrMaps[spookyGuessrMode ?? 'Custom']
+        if (spookyGuessrMapId) {
+          const mapIconInfo = await getMapIconFromId(spookyGuessrMapId)
+          if (mapIconInfo && mapIconInfo.url) {
+            presenceData.smallImageKey = mapIconInfo.url
+            presenceData.smallImageText = `${mapIconInfo.name} (${spookyGuessrMode})`
+          }
+          else {
+            delete presenceData.smallImageKey
+          }
+        }
+        else {
+          delete presenceData.smallImageKey
+        }
+      }
+    }
+    else {
+      spookyGuessrDay = null
+      health = null
+      delete presenceData.state
+      delete presenceData.smallImageKey
     }
   }
   else if (currentPath[0] === 'multiplayer') {
     if (!currentPath[1]) {
       // Duels (new HUD)
-      setHealthUI(strings.duels)
+      setHealthUI(strings.duels, true)
       presenceData.largeImageKey = gameModeIcons.solo_duels
       const rankText = document.querySelectorAll('[class^="division-header_title__"]')
+      const unrankedHeader = document.querySelectorAll('[class^="division-header_unrankedRoot__"]')
+      if (unrankedHeader[0]) {
+        const unrankedHeaderShowing = document.querySelectorAll('[class*="division-header_reveal__"]')
+        isUnranked = (unrankedHeaderShowing[0] && true) || false
+      }
       if (rankText[0]) {
         const divisionString = rankText[0].textContent
-        setDivisionInfo(divisionString)
+        const ratingText = document.querySelectorAll('[class^="division-header_rating__"]')
+        let ratingString: any
+        if (ratingText[0]) {
+          ratingString = ratingText[0].textContent
+        }
+        setDivisionInfo(divisionString, ratingString)
       }
       else if (lastPath[0] !== 'multiplayer' || lastPath[1]) {
         delete presenceData.smallImageKey
         presenceData.state = strings.inRanked
-        setDivisionInfo(soloDivision)
+        setDivisionInfo(soloDivision, soloRatingString)
       }
     }
     else if (currentPath[1] === 'teams') {
       // Duels (new HUD, teams)
-      setHealthUI(strings.teamDuels)
+      isUnranked = false
+      setHealthUI(strings.teamDuels, true)
       presenceData.largeImageKey = gameModeIcons.team_duels
       if (isNewURL) {
         delete presenceData.smallImageKey
@@ -513,7 +664,12 @@ presence.on('UpdateData', async () => {
       const rankText = document.querySelectorAll('[class^="division-header_title__"]')
       if (rankText[0]) {
         const divisionString = rankText[0].textContent
-        setDivisionInfo(divisionString)
+        const ratingText = document.querySelectorAll('[class^="division-header_rating__"]')
+        let ratingString: any
+        if (ratingText[0]) {
+          ratingString = ratingText[0].textContent
+        }
+        setDivisionInfo(divisionString, ratingString)
       }
     }
     else if (currentPath[1] === 'battle-royale-countries') {
@@ -533,7 +689,8 @@ presence.on('UpdateData', async () => {
       presenceData.details = strings.teamDuels
       presenceData.largeImageKey = gameModeIcons.team_duels
       presenceData.state = strings.inUnranked
-      delete presenceData.smallImageKey
+      presenceData.smallImageKey = divisionIcons.Unranked
+      presenceData.smallImageText = strings.unranked
     }
     else {
       presenceData.details = strings.multiplayer

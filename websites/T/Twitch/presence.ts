@@ -1,4 +1,4 @@
-import { ActivityType, Assets, getTimestamps, getTimestampsFromMedia, timestampFromFormat } from 'premid'
+import { ActivityType, Assets, getTimestamps, getTimestampsFromMedia, StatusDisplayType, timestampFromFormat } from 'premid'
 
 let elapsed = Math.floor(Date.now() / 1000)
 let prevUrl = document.location.href
@@ -144,7 +144,7 @@ presence.on('UpdateData', async () => {
     logo,
     devLogo,
     buttons,
-    streamerTitle,
+    displayType,
   ] = await Promise.all([
     presence.getSetting<boolean>('browse'),
     presence.getSetting<boolean>('live'),
@@ -160,7 +160,7 @@ presence.on('UpdateData', async () => {
     presence.getSetting<number>('logo'),
     presence.getSetting<number>('devLogo'),
     presence.getSetting<boolean>('buttons'),
-    presence.getSetting<boolean>('streamerTitle'),
+    presence.getSetting<number>('displayType'),
   ])
 
   if (oldLang !== newLang || !strings) {
@@ -453,7 +453,21 @@ presence.on('UpdateData', async () => {
 
       if (path.includes('/moderator/')) {
         presenceData.details = strings.modStreamer
-        presenceData.state = getElement('.stream-info-card p > a')
+
+        // the title on top of the display box
+        let streamerinfo = document.querySelector('[data-a-target="player-info-title"]')?.textContent
+
+        // "Streamername's Mod View - Twitch"
+        if (!streamerinfo) {
+          streamerinfo = document.title.split('\'s')[0]
+        }
+
+        // fallback, broken? Maybe just on my browser
+        if (!streamerinfo) {
+          streamerinfo = getElement('.stream-info-card p > a')
+        }
+
+        presenceData.state = streamerinfo
 
         if (getElement('.modview-dock-widget p') !== 'Offline') {
           presenceData.smallImageKey = Assets.Live
@@ -486,9 +500,6 @@ presence.on('UpdateData', async () => {
             ?.src
             ?.replace(/-\d{1,2}x\d{1,2}/, '-600x600')
             ?? (logoArr[logo] || ActivityAssets.Logo)
-          if (streamer && streamerTitle && !privacy) {
-            presenceData.name = streamer
-          }
           presenceData.details = streamDetail
             .replace('%title%', title ?? '')
             .replace('%streamer%', streamer ?? '')
@@ -517,7 +528,7 @@ presence.on('UpdateData', async () => {
 
         if (showVideo && !live) {
           //* Video or Clips
-          const title = getElement('.channel-info-content h2')
+          const title = getElement('[data-a-target="stream-title"]')
             ?.split('•')
             .shift()
           const uploader = document.querySelector('.channel-info-content h1')?.textContent
@@ -529,7 +540,7 @@ presence.on('UpdateData', async () => {
             || 'Just Chatting'
           const profilePic = document
             .querySelector<HTMLImageElement>(
-              '.tw-halo > .tw-aspect > .tw-avatar > .tw-image-avatar',
+              '.channel-info-content .tw-avatar > .tw-image',
             )
             ?.src
             ?.replace(/-\d{1,2}x\d{1,2}/, '-600x600')
@@ -576,6 +587,21 @@ presence.on('UpdateData', async () => {
         else if (showBrowsing && (!showVideo || !showLive)) {
           presenceData.details = strings.browse
           delete presenceData.state
+        }
+
+        switch (displayType) {
+          case 0: {
+            presenceData.statusDisplayType = StatusDisplayType.Name
+            break
+          }
+          case 1: {
+            presenceData.statusDisplayType = StatusDisplayType.Details
+            break
+          }
+          case 2: {
+            presenceData.statusDisplayType = StatusDisplayType.State
+            break
+          }
         }
       }
 
@@ -952,10 +978,7 @@ presence.on('UpdateData', async () => {
   if (privacy || !buttons)
     delete presenceData.buttons
 
-  if (privacy)
-    delete presenceData.name
-
   if (presenceData.details)
     presence.setActivity(presenceData)
-  else presence.setActivity()
+  else presence.clearActivity()
 })
